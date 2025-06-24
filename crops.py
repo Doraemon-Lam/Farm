@@ -35,35 +35,47 @@ class CropInstance:
         self.nutrition = None
         self.freshness = 100.0
         self.days_since_harvest = 0
+        
+    ## 替换成分钟级生长逻辑
+    def absorb_weather(self, weather_minute):
+        self.total_sun += weather_minute.current_sunlight / 60.0
+        if weather_minute.current_rainfall > 0:
+            self.total_water += weather_minute.current_rainfall / 24
 
-    def grow_one_day(self, weather):
+
+    def update_one_day(self, weather_minute: Weather):
         import random
         if self.dead or self.harvested:
             return
 
         self.day_counter += 1
-
-        temp = weather.temperature
-        rainfall = weather.rainfall
+        
+        # 天气判断来自前一天的累计数据
         min_temp, max_temp = self.crop_type.temp_range
-
         healthy_today = True
-        if temp < min_temp or temp > max_temp:
+        
+        avg_temp = self.total_sun / self.day_counter # 用日照强度近似生长温度判断
+        if avg_temp < min_temp or avg_temp > max_temp:
             healthy_today = False
-        if rainfall < 2.0 and not self.watered_today and self.crop_type.drought_tolerance < 0.5:
+            
+        # 土壤水分判断 (以每日总水为单位，粗略处理)
+        water_ratio = self.total_water / self.day_counter
+        if water_ratio < 0.5 and not self.watered_today and self.crop_type.drought_tolerance < 0.5:
             healthy_today = False
-        if weather.extreme_event in ["Thunderstorm", "Snowstorm", "Strong Wind"]:
+            
+        # 极端天气
+        if weather_minute.extreme_event in ["Thunderstorm", "Snowstorm", "Strong Wind"]:
             healthy_today = False
-
-        # 发病率根据是否喷洒农药调整
+            
+        # 病害
         disease_chance = self.crop_type.disease_chance
         if self.pesticide_effect > 0:
-            disease_chance *= 0.1  # 降低90%
+            disease_chance *= 0.1  # 农药降低90%
             self.pesticide_effect -= 1
-
+            
         if random.random() < disease_chance:
-            print(f"⚠ {self.crop_type.name} 出现病害！")
             healthy_today = False
+            print(f"⚠ {self.crop_type.name} 出现病害！")
 
         if not healthy_today:
             self.consecutive_unhealthy_days += 1
@@ -75,17 +87,13 @@ class CropInstance:
             self.consecutive_unhealthy_days = 0
             self.healthy = True
 
+        # 状态清理
         if self.watered_today:
             self.total_water += 1
         if self.fertilized_today:
             self.total_fertilizer += 1
         if self.pesticide_today:
             self.pesticide_effect = 2  # 农药效果持续2天
-
-        self.total_sun += weather.sunshine_hours
-
-        if self.day_counter >= self.crop_type.grow_days:
-            self.matured = True
 
         self.watered_today = False
         self.fertilized_today = False

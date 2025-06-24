@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import json
 import os
 
-from weather import Weather
+from weather import Weather, WeatherDynamic
 from market import Market
 from crops import get_default_crop_types, CropInstance
 from storage import Storage
@@ -17,6 +17,10 @@ class FarmerSimGUI:
         self.root = root
         self.root.title("\U0001F33E FarmerSimPy 农民模拟器")
         self.root.geometry("880x680")
+        
+        # 添加动态模式切换
+        self.dynamic_mode = False
+        self.timer_running = False
 
         # 初始化数据
         self.date = datetime(2025, 3, 1)
@@ -66,7 +70,7 @@ class FarmerSimGUI:
         tk.Button(op_frame, text="出售仓库", command=self.sell_crop).pack(side="left")
         tk.Button(op_frame, text="推进一天", command=self.next_day).pack(side="right")
 
-        # 日志与保存
+        # 日志与保存与模式切换
         log_frame = tk.Frame(root)
         log_frame.pack(fill="x")
         self.log_box = scrolledtext.ScrolledText(log_frame, height=24)
@@ -75,6 +79,7 @@ class FarmerSimGUI:
         btns.pack(fill="x")
         tk.Button(btns, text="保存存档", command=self.save_game).pack(side="left")
         tk.Button(btns, text="读取存档", command=self.load_game).pack(side="left")
+        tk.Button(btns, text="切换动态模式", command=self.toggle_dynamic_mode).pack(side="right")
         tk.Button(btns, text="退出游戏", command=root.quit).pack(side="right")
 
         self.update_info_bar()
@@ -313,7 +318,7 @@ class FarmerSimGUI:
         self.log(self.weather.summary())
         for i, crop in enumerate(self.fields):
             if crop:
-                crop.grow_one_day(self.weather)
+                crop.update_one_day(self.weather)
                 crop.update_freshness()
                 self.log(f"田地{i + 1}: {crop.status()}")
         fee = self.storage.update_all()
@@ -363,6 +368,49 @@ class FarmerSimGUI:
             self.refresh_all()
         except Exception as e:
             self.log(f"❌ 读取存档失败: {e}")
+            
+    ## 动态模式逻辑
+    def toggle_dynamic_mode(self):
+        self.dynamic_mode = not self.dynamic_mode
+        if self.dynamic_mode:
+            self.log("🔄 动态模式已启用")
+            self.weather = WeatherDynamic(self.date)
+            self.timer_running = True
+            self.root.after(1000, self.update_dynamic_minute)
+        else:
+            self.log("⏸ 返回静态模式")
+            self.timer_running = False
+            
+    def update_dynamic_minute(self):
+        if not self.timer_running:
+            return
+        
+        self.weather.update_minute()
+        self.log(self.weather.summary())
+        
+        # 每分钟：向作物输入天气
+        for crop in self.fields:
+            if crop and not crop.dead and not crop.harvested:
+                crop.absorb_weather(self.weather)
+                
+        # 每天凌晨自动触发生长
+        if self.weather.is_new_day():
+            self.date += timedelta(days=1)
+            self.market.update_prices(self.weather)
+            self.log('📈 市场已刷新')
+            for crop in self.fields:
+                if crop:
+                    crop.update_one_day(self.weather)
+                    crop.update_freshness()
+                    self.log(crop.status())
+            fee = self.storage.update_all()
+            self.funds -= fee
+            self.log(f"📦 仓储费用 ￥{fee:.2f}")
+            self.update_info_bar()
+        
+        self.refresh_all()
+        self.root.after(1000, self.update_dynamic_minute)
+                
 
 if __name__ == "__main__":
     root = tk.Tk()
