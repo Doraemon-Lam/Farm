@@ -319,6 +319,7 @@ class FarmerSimGUI:
         for i, crop in enumerate(self.fields):
             if crop:
                 crop.update_one_day(self.weather)
+                crop.check_maturity()  # 检查成熟
                 crop.update_freshness()
                 self.log(f"田地{i + 1}: {crop.status()}")
         fee = self.storage.update_all()
@@ -376,19 +377,19 @@ class FarmerSimGUI:
             self.log("🔄 动态模式已启用")
             self.weather = WeatherDynamic(self.date)
             self.timer_running = True
-            self.root.after(1000, self.update_dynamic_minute)
+            self.root.after(2500, self.update_dynamic_hour) # 现实2.5秒 = 游戏1小时
         else:
             self.log("⏸ 返回静态模式")
             self.timer_running = False
             
-    def update_dynamic_minute(self):
+    def update_dynamic_hour(self):
         if not self.timer_running:
             return
         
-        self.weather.update_minute()
+        self.weather.update_hour()
         self.log(self.weather.summary())
         
-        # 每分钟：向作物输入天气
+        # 每小时：向作物输入天气
         for crop in self.fields:
             if crop and not crop.dead and not crop.harvested:
                 crop.absorb_weather(self.weather)
@@ -396,11 +397,13 @@ class FarmerSimGUI:
         # 每天凌晨自动触发生长
         if self.weather.is_new_day():
             self.date += timedelta(days=1)
+            self.weather.start_new_day(self.date) # 更新天气
             self.market.update_prices(self.weather)
             self.log('📈 市场已刷新')
             for crop in self.fields:
                 if crop:
                     crop.update_one_day(self.weather)
+                    crop.check_maturity() # 检查成熟
                     crop.update_freshness()
                     self.log(crop.status())
             fee = self.storage.update_all()
@@ -409,7 +412,7 @@ class FarmerSimGUI:
             self.update_info_bar()
         
         self.refresh_all()
-        self.root.after(1000, self.update_dynamic_minute)
+        self.root.after(2500, self.update_dynamic_hour)
                 
 
 if __name__ == "__main__":

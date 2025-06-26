@@ -37,10 +37,15 @@ class CropInstance:
         self.days_since_harvest = 0
         
     ## 替换成分钟级生长逻辑
-    def absorb_weather(self, weather_minute):
-        self.total_sun += weather_minute.current_sunlight / 60.0
-        if weather_minute.current_rainfall > 0:
-            self.total_water += weather_minute.current_rainfall / 24
+    def absorb_weather(self, weather_hour):
+        self.total_sun += weather_hour.current_sunlight
+        if weather_hour.current_rainfall > 0:
+            self.total_water += weather_hour.current_rainfall
+
+    def check_maturity(self):
+        if not self.matured and self.day_counter >= self.crop_type.grow_days:
+            self.matured = True
+            print(f"🎉 {self.crop_type.name} 已成熟！")
 
 
     def update_one_day(self, weather_minute: Weather):

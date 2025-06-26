@@ -91,9 +91,14 @@ class WeatherDynamic:
         self.current_sunlight = 0.0
         self.current_wind = 0.0
         self.extreme_event = None
+        self.rainfall_today = 0.0
 
         self.daily_temperature_curve = self._generate_daily_temperature_curve()
         self._generate_daily_weather_base()
+
+    @property
+    def rainfall(self):
+        return self.rainfall_today
 
     def _generate_daily_temperature_curve(self):
         # 模拟一天内 24 小时的温度曲线（贝尔状）
@@ -144,26 +149,37 @@ class WeatherDynamic:
             extreme = "Strong Wind"
         self.extreme_event = extreme
 
-    def update_minute(self):
+    def start_new_day(self, date):
+        self.date = date
+        self.time = datetime(date.year, date.month, date.day, 0, 0)
+        self.daily_temperature_curve = self._generate_daily_temperature_curve()
+        self._generate_daily_weather_base()
+
+    def update_hour(self):
         hour = self.time.hour
         self.current_temperature = self.daily_temperature_curve[hour]
         self.current_wind = round(random.uniform(0.5, 5.0), 1)
 
-        # 降水模拟：如果今天安排了降雨
+        # 降水模拟
         if self.rain_start is not None and self.rain_start <= hour < self.rain_start + self.rain_duration:
             self.current_rainfall = round(self.rainfall_today / self.rain_duration, 1)
         else:
             self.current_rainfall = 0.0
 
-        # 日照强度（简化模拟：中午强，早晚弱）
-        self.current_sunlight = round(max(0, 1 - abs(hour - 12) / 6) * 10 + random.uniform(-1, 1), 1)
+        # 日照强度
+        if 6 <= hour <= 18:
+            base_sunlight = (1 - abs(hour - 12) / 6) * 10
+            noisy_sunlight = base_sunlight + random.uniform(-1, 1)
+            self.current_sunlight = round(max(0, noisy_sunlight), 1)
+        else:
+            self.current_sunlight = 0.0
 
-        self.time += timedelta(minutes=1)
+        self.time += timedelta(hours=1)
 
     def summary(self):
         return (
             f"[{self.time.strftime('%H:%M')}] 🌡{self.current_temperature}℃ | ☔{self.current_rainfall}mm | "
-            f"☀{self.current_sunlight}h | 💨{self.current_wind}m/s"
+            f"☀ 日照: {self.current_sunlight} | 💨风速: {self.current_wind}m/s"
             + (f" | ⚠ {self.extreme_event}" if self.extreme_event else "")
         )
 
