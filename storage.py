@@ -1,3 +1,5 @@
+import random
+
 class Storage:
     def __init__(self):
         self.stock = []
@@ -8,6 +10,7 @@ class Storage:
             "yield": crop_info["yield"],
             "nutrition": crop_info["nutrition"],
             "freshness": crop_info["freshness"],
+            "cost": crop_info.get("cost", 0), # Get cost, default to 0 if not present
             "days": 0
         })
 
@@ -15,7 +18,9 @@ class Storage:
         total_cost = 0
         for crop in self.stock:
             crop['days'] += 1
-            decay = 10 / (crop['days'] + 2)  # 调整递减比例
+            # 更加平滑的腐烂曲线，初期腐烂较慢
+            decay_factor = 0.5 + (crop['days'] / 30) # 腐烂速度随时间增加
+            decay = random.uniform(0.8, 1.2) * decay_factor
             crop['freshness'] = max(0.0, crop['freshness'] - decay)
             total_cost += storage_cost_per_crop
         return round(total_cost, 2)

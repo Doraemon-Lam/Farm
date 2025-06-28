@@ -1,12 +1,15 @@
 {
-  "date": "2025-03-10",
-  "funds": 9400.85,
+  "date": "2025-06-23 21:00:00",
+  "funds": 5849.6,
   "fields": [
-    null,
     null,
     null,
     null,
     null
   ],
-  "storage": []
+  "storage": [],
+  "loan_info": {
+    "overdue_count": 1,
+    "max_overdue": 2
+  }
 }

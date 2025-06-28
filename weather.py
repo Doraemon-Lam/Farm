@@ -63,11 +63,11 @@ class Weather:
     def _generate_extreme_event(self):
         chance = random.random()
         if self.season == "Summer" and chance < 0.05:
-            return "Thunderstorm"
+            return "雷暴台风"
         elif self.season == "Winter" and chance < 0.03 and self.temperature < 0:
-            return "Snowstorm"
+            return "暴风雪"
         elif self.season == "Spring" and chance < 0.02:
-            return "Strong Wind"
+            return "大风"
         return None
 
     def summary(self):
@@ -80,7 +80,7 @@ class Weather:
             summary_text += f" | ⚠ 极端天气: {self.extreme_event}"
         return summary_text
     
-## 分钟级更新
+## 小时级更新
 
 class WeatherDynamic:
     def __init__(self, date: datetime):
@@ -142,11 +142,11 @@ class WeatherDynamic:
         month = self.date.month
         extreme = None
         if month in [6, 7, 8] and random.random() < 0.05:
-            extreme = "Thunderstorm"
+            extreme = "雷暴台风"
         elif month in [12, 1, 2] and random.random() < 0.03:
-            extreme = "Snowstorm"
+            extreme = "暴风雪"
         elif month in [3, 4] and random.random() < 0.02:
-            extreme = "Strong Wind"
+            extreme = "强风"
         self.extreme_event = extreme
 
     def start_new_day(self, date):
@@ -178,7 +178,7 @@ class WeatherDynamic:
 
     def summary(self):
         return (
-            f"[{self.time.strftime('%H:%M')}] 🌡{self.current_temperature}℃ | ☔{self.current_rainfall}mm | "
+            f"[{self.time.strftime('%m-%d %H:%M')}] 🌡{self.current_temperature}℃ | ☔{self.current_rainfall}mm | "
             f"☀ 日照: {self.current_sunlight} | 💨风速: {self.current_wind}m/s"
             + (f" | ⚠ {self.extreme_event}" if self.extreme_event else "")
         )

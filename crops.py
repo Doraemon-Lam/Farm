@@ -42,49 +42,68 @@ class CropInstance:
         
         self.pesticide_effect_hours = 0
         self.damage_reasons = set()
+        self.total_cost = crop_type.cost_per_mu # Initial cost
 
     def update_hourly(self, weather_hour):
         if self.dead or self.harvested:
             return
 
+        self._update_counters()
+        self._update_water_level(weather_hour)
+        self._update_sun_stress(weather_hour)
+        self._update_health(weather_hour)
+
+        if self.pesticide_effect_hours > 0:
+            self.pesticide_effect_hours -= 1
+
+        if self.health == 0:
+            self.dead = True
+
+    def _update_counters(self):
         self.hour_counter += 1
         if self.hour_counter % 24 == 0:
             self.day_counter += 1
             self.check_maturity()
-            # Daily disease check
             self.check_disease()
 
-        # 1. Water Level Update
-        # Evaporation/Consumption: increases with sun and temp, decreases with rain
+    def _update_water_level(self, weather_hour):
+        # Evaporation/Consumption
         hourly_consumption = self.crop_type.water_need / 24
         evaporation = (weather_hour.current_sunlight / 10) * (max(0, weather_hour.current_temperature - 10) / 20)
         self.water_level -= (hourly_consumption + evaporation)
         
         # Rainfall bonus
         if weather_hour.current_rainfall > 0:
-            self.water_level += weather_hour.current_rainfall * 2 # Rainfall is more effective
+            self.water_level += weather_hour.current_rainfall * 2
             self.damage_reasons.discard("缺水")
 
-        self.water_level = max(0, min(120, self.water_level)) # Can be over 100
+        self.water_level = max(0, min(120, self.water_level))
 
-        # 2. Sunlight Stress Update
-        ideal_sun, tolerance = self.crop_type.sun_preference
+    def _update_sun_stress(self, weather_hour):
         sun_intensity = weather_hour.current_sunlight
+        
+        # At night or in very low light, sun stress should recover, not accumulate.
+        if sun_intensity <= 1.0:
+            self.sun_stress = max(0, self.sun_stress - 1)
+            self.damage_reasons.discard("光照")
+            return
+
+        ideal_sun, tolerance = self.crop_type.sun_preference
         if not (ideal_sun - tolerance <= sun_intensity <= ideal_sun + tolerance):
-            self.sun_stress += 2  # Stress accumulates faster
+            self.sun_stress += 2
             self.damage_reasons.add("光照")
         else:
-            self.sun_stress = max(0, self.sun_stress - 1) # Stress recovers slowly
+            self.sun_stress = max(0, self.sun_stress - 1)
             self.damage_reasons.discard("光照")
         self.sun_stress = min(100, self.sun_stress)
 
-        # 3. Health Update based on status
+    def _update_health(self, weather_hour):
         # Water damage
-        water_damage_threshold = 30 * (1 + self.crop_type.drought_tolerance) # Drought tolerance helps
+        water_damage_threshold = 30 * (1 + self.crop_type.drought_tolerance)
         if self.water_level < water_damage_threshold:
             self.health -= (water_damage_threshold - self.water_level) * 0.1
             self.damage_reasons.add("缺水")
-        elif self.water_level > 115: # Overwatering
+        elif self.water_level > 115:
             self.health -= (self.water_level - 115) * 0.2
             self.damage_reasons.add("积水")
         else:
@@ -111,17 +130,11 @@ class CropInstance:
         else:
             self.damage_reasons.discard("极端天气")
 
-        # Pesticide effect countdown
-        if self.pesticide_effect_hours > 0:
-            self.pesticide_effect_hours -= 1
-
         # Health recovery if conditions are good
         if not self.damage_reasons:
             self.health = min(100, self.health + 0.2)
 
         self.health = max(0, self.health)
-        if self.health == 0:
-            self.dead = True
 
     def check_maturity(self):
         if not self.matured and self.day_counter >= self.crop_type.grow_days:
@@ -144,9 +157,11 @@ class CropInstance:
         elif action == "fertilize":
             # Fertilizing can boost health recovery or nutrition
             self.health = min(100, self.health + 5)
+            self.total_cost += 100 # Assuming a fixed cost for now
         elif action == "pesticide":
             self.pesticide_effect_hours = 48 # Effective for 48 hours (2 days)
             self.damage_reasons.discard("病害")
+            self.total_cost += 120 # Assuming a fixed cost for now
 
     def harvest(self):
         if not self.matured or self.dead or self.harvested:
@@ -165,14 +180,9 @@ class CropInstance:
             "name": self.crop_type.name,
             "yield": yield_final,
             "nutrition": self.nutrition,
-            "freshness": self.freshness
+            "freshness": self.freshness,
+            "cost": self.total_cost
         }
-
-    def update_freshness(self):
-        if self.harvested and self.freshness > 0:
-            self.days_since_harvest += 1
-            decay = 10 / (self.days_since_harvest + 2)
-            self.freshness = max(0.0, self.freshness - decay)
 
     def status(self):
         crop = self.crop_type
