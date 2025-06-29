@@ -1,48 +1,60 @@
-# crops.py（重构版）
+# crops.py (重构版)
 
 import random
+from plant import CropData
 
-class CropType:
-    def __init__(self, name, grow_days, temp_range, drought_tolerance, 
-                 cost_per_mu, yield_per_mu, disease_chance, 
-                 water_need, sun_preference):
-        self.name = name
-        self.grow_days = grow_days
-        self.temp_range = temp_range
-        self.drought_tolerance = drought_tolerance  # (0-1), a factor for reducing water damage
-        self.cost_per_mu = cost_per_mu
-        self.yield_per_mu = yield_per_mu
-        self.disease_chance = disease_chance  # Daily chance of disease
-        self.water_need = water_need  # Base water consumption per day (mm)
-        self.sun_preference = sun_preference  # Tuple (ideal_intensity, tolerance_range)
+class Field:
+    """Represents a single piece of farmland with its own soil properties."""
+    def __init__(self):
+        self.soil_npk = {'N': 100.0, 'P': 100.0, 'K': 100.0} # N-P-K values of the soil
+        self.crop: CropInstance | None = None
 
-    def description(self):
-        return (f"{self.name} | 生长周期: {self.grow_days}天 | 适宜温度: {self.temp_range[0]}-{self.temp_range[1]}℃ | "
-                f"抗旱性: {self.drought_tolerance} | 需水量: {self.water_need}mm/天 | "
-                f"喜光: {self.sun_preference[0]}±{self.sun_preference[1]}")
+    def apply_fertilizer(self, nutrient_type, amount=25):
+        """Applies fertilizer to the soil."""
+        if nutrient_type in self.soil_npk:
+            self.soil_npk[nutrient_type] += amount
+            return f"成功为田地施加了{amount}单位的{nutrient_type}肥。"
+        return "无效的肥料类型。"
 
+    def plant_crop(self, crop_data: CropData, planted_day: int):
+        if not self.crop:
+            self.crop = CropInstance(crop_data, planted_day, self)
+            return True
+        return False
+
+    def clear_field(self):
+        self.crop = None
+
+    def status(self):
+        if self.crop:
+            return self.crop.status()
+        else:
+            npk_str = f"N: {self.soil_npk['N']:.1f}, P: {self.soil_npk['P']:.1f}, K: {self.soil_npk['K']:.1f}"
+            return f"（空地）\n土壤养分: {npk_str}"
 
 class CropInstance:
-    def __init__(self, crop_type: CropType, planted_day: int):
-        self.crop_type = crop_type
+    def __init__(self, crop_data: CropData, planted_day: int, field: Field):
+        self.crop_data = crop_data
+        self.field = field
+        self.planted_day = planted_day
+        
         self.day_counter = 0
         self.hour_counter = 0
-        self.planted_day = planted_day
+        self.growth_points = 0.0
         
         self.matured = False
         self.dead = False
         self.harvested = False
         
-        self.health = 100.0  # (0-100)
-        self.water_level = 100.0  # (0-100) percentage
-        self.sun_stress = 0.0  # (0-100)
-        self.nutrition = 0.0 # Final nutrition value
-        self.freshness = 100.0
-        self.days_since_harvest = 0
+        self.health = 100.0
+        self.water_level = 100.0
+        self.sun_stress = 0.0
+        self.nutrient_satisfaction = {'N': 0.0, 'P': 0.0, 'K': 0.0, 'total_days': 0}
+        self.quality_tags = set()
         
         self.pesticide_effect_hours = 0
         self.damage_reasons = set()
-        self.total_cost = crop_type.cost_per_mu # Initial cost
+        self.total_cost = crop_data.cost_per_mu
 
     def update_hourly(self, weather_hour):
         if self.dead or self.harvested:
@@ -56,23 +68,61 @@ class CropInstance:
         if self.pesticide_effect_hours > 0:
             self.pesticide_effect_hours -= 1
 
-        if self.health == 0:
+        if self.health <= 0:
             self.dead = True
 
     def _update_counters(self):
         self.hour_counter += 1
         if self.hour_counter % 24 == 0:
             self.day_counter += 1
+            self._daily_nutrient_update()
             self.check_maturity()
             self.check_disease()
 
+    def _daily_nutrient_update(self):
+        """Handles daily nutrient uptake and growth point calculation."""
+        pref_n, pref_p, pref_k = self.crop_data.npk_preference
+        total_pref = pref_n + pref_p + pref_k
+        
+        # Ideal uptake for each nutrient
+        ideal_uptake = {
+            'N': self.crop_data.npk_uptake * (pref_n / total_pref),
+            'P': self.crop_data.npk_uptake * (pref_p / total_pref),
+            'K': self.crop_data.npk_uptake * (pref_k / total_pref)
+        }
+
+        # Actual uptake from soil
+        actual_uptake = {
+            'N': min(ideal_uptake['N'], self.field.soil_npk['N']),
+            'P': min(ideal_uptake['P'], self.field.soil_npk['P']),
+            'K': min(ideal_uptake['K'], self.field.soil_npk['K'])
+        }
+
+        # Consume nutrients from soil
+        for nutrient, value in actual_uptake.items():
+            self.field.soil_npk[nutrient] -= value
+
+        # Calculate satisfaction (0-1 scale for the day)
+        daily_satisfaction = sum(actual_uptake.values()) / sum(ideal_uptake.values())
+        
+        # Update total satisfaction
+        self.nutrient_satisfaction['total_days'] += 1
+        for nutrient in 'NPK':
+            satisfaction_ratio = actual_uptake[nutrient] / ideal_uptake[nutrient] if ideal_uptake[nutrient] > 0 else 1
+            self.nutrient_satisfaction[nutrient] += satisfaction_ratio
+
+        # Update growth points based on satisfaction
+        self.growth_points += daily_satisfaction # If satisfaction is 1, grows 1 day. If 0.5, grows 0.5 day.
+
+        # Special Traits (e.g., Nitrogen Fixation for Soybeans)
+        if self.crop_data.special_trait == 'nitrogen_fixer':
+            self.field.soil_npk['N'] += 0.5 # Soybeans fix some nitrogen back into the soil
+
     def _update_water_level(self, weather_hour):
-        # Evaporation/Consumption
-        hourly_consumption = self.crop_type.water_need / 24
+        hourly_consumption = self.crop_data.water_need / 24
         evaporation = (weather_hour.current_sunlight / 10) * (max(0, weather_hour.current_temperature - 10) / 20)
         self.water_level -= (hourly_consumption + evaporation)
         
-        # Rainfall bonus
         if weather_hour.current_rainfall > 0:
             self.water_level += weather_hour.current_rainfall * 2
             self.damage_reasons.discard("缺水")
@@ -81,14 +131,12 @@ class CropInstance:
 
     def _update_sun_stress(self, weather_hour):
         sun_intensity = weather_hour.current_sunlight
-        
-        # At night or in very low light, sun stress should recover, not accumulate.
         if sun_intensity <= 1.0:
             self.sun_stress = max(0, self.sun_stress - 1)
             self.damage_reasons.discard("光照")
             return
 
-        ideal_sun, tolerance = self.crop_type.sun_preference
+        ideal_sun, tolerance = self.crop_data.sun_preference
         if not (ideal_sun - tolerance <= sun_intensity <= ideal_sun + tolerance):
             self.sun_stress += 2
             self.damage_reasons.add("光照")
@@ -98,70 +146,65 @@ class CropInstance:
         self.sun_stress = min(100, self.sun_stress)
 
     def _update_health(self, weather_hour):
+        # Reset damage flags that can recover
+        self.damage_reasons.discard("养分")
+
+        # Nutrient damage
+        avg_satisfaction = self.growth_points / self.day_counter if self.day_counter > 0 else 1
+        if avg_satisfaction < 0.6:
+            self.health -= (0.6 - avg_satisfaction) * 5
+            self.damage_reasons.add("养分")
+
         # Water damage
-        water_damage_threshold = 30 * (1 + self.crop_type.drought_tolerance)
-        if self.water_level < water_damage_threshold:
-            self.health -= (water_damage_threshold - self.water_level) * 0.1
+        if self.water_level < 30:
+            self.health -= (30 - self.water_level) * 0.1
             self.damage_reasons.add("缺水")
         elif self.water_level > 115:
             self.health -= (self.water_level - 115) * 0.2
             self.damage_reasons.add("积水")
-        else:
-            self.damage_reasons.discard("缺水")
-            self.damage_reasons.discard("积水")
 
-        # Sun stress damage
-        if self.sun_stress > 50:
-            self.health -= (self.sun_stress - 50) * 0.05
-            self.damage_reasons.add("光照")
-
-        # Temperature damage
-        min_temp, max_temp = self.crop_type.temp_range
+        # Other damages...
+        min_temp, max_temp = self.crop_data.temp_range
         if not (min_temp <= weather_hour.current_temperature <= max_temp):
             self.health -= 0.5
             self.damage_reasons.add("温度")
-        else:
-            self.damage_reasons.discard("温度")
-            
-        # Extreme weather damage
-        if weather_hour.extreme_event:
-            self.health -= 5
-            self.damage_reasons.add("极端天气")
-        else:
-            self.damage_reasons.discard("极端天气")
 
-        # Health recovery if conditions are good
         if not self.damage_reasons:
             self.health = min(100, self.health + 0.2)
 
         self.health = max(0, self.health)
 
     def check_maturity(self):
-        if not self.matured and self.day_counter >= self.crop_type.grow_days:
+        if not self.matured and self.growth_points >= self.crop_data.grow_days:
             self.matured = True
+            self._finalize_quality_tags()
+
+    def _finalize_quality_tags(self):
+        """Check nutrient satisfaction at maturity to award quality tags."""
+        total_days = self.nutrient_satisfaction['total_days']
+        if total_days == 0: return
+
+        for nutrient, tag in self.crop_data.quality_tags.items():
+            avg_satisfaction = self.nutrient_satisfaction[nutrient] / total_days
+            if avg_satisfaction >= 0.9:
+                self.quality_tags.add(tag)
 
     def check_disease(self):
-        disease_chance = self.crop_type.disease_chance
+        disease_chance = self.crop_data.disease_chance
         if self.pesticide_effect_hours > 0:
-            disease_chance *= 0.1  # Pesticide reduces chance by 90%
-        
+            disease_chance *= 0.1
         if random.random() < disease_chance:
             self.health -= 10
             self.damage_reasons.add("病害")
 
     def apply_manual_action(self, action, value=0):
         if action == "water":
-            self.water_level += 30 # A full watering
-            self.water_level = min(120, self.water_level)
+            self.water_level = min(120, self.water_level + 30)
             self.damage_reasons.discard("缺水")
-        elif action == "fertilize":
-            # Fertilizing can boost health recovery or nutrition
-            self.health = min(100, self.health + 5)
-            self.total_cost += 100 # Assuming a fixed cost for now
         elif action == "pesticide":
-            self.pesticide_effect_hours = 48 # Effective for 48 hours (2 days)
+            self.pesticide_effect_hours = 48
             self.damage_reasons.discard("病害")
-            self.total_cost += 120 # Assuming a fixed cost for now
+            self.total_cost += 120
 
     def harvest(self):
         if not self.matured or self.dead or self.harvested:
@@ -169,47 +212,38 @@ class CropInstance:
 
         self.harvested = True
         
-        # Yield is affected by final health
-        yield_modifier = self.health / 100.0
-        yield_final = round(self.crop_type.yield_per_mu * yield_modifier, 1)
+        # Yield is affected by overall nutrient satisfaction
+        total_days = self.nutrient_satisfaction['total_days']
+        avg_satisfaction = sum(self.nutrient_satisfaction[n] for n in 'NPK') / (total_days * 3) if total_days > 0 else 0
+        yield_modifier = 0.2 + (avg_satisfaction * 0.8) # Base 20% yield, max 100%
+        yield_final = round(self.crop_data.yield_per_mu * yield_modifier, 1)
 
-        # Nutrition is also based on health
-        self.nutrition = round(self.health, 1)
+        # Nutrition is based on final health
+        nutrition = round(self.health, 1)
 
         return {
-            "name": self.crop_type.name,
+            "name": self.crop_data.name,
             "yield": yield_final,
-            "nutrition": self.nutrition,
-            "freshness": self.freshness,
-            "cost": self.total_cost
+            "nutrition": nutrition,
+            "freshness": 100.0,
+            "cost": self.total_cost,
+            "quality_tags": list(self.quality_tags)
         }
 
     def status(self):
-        crop = self.crop_type
+        crop = self.crop_data
         if self.dead:
             return f"{crop.name} | ❌ 已死亡 (原因: {', '.join(self.damage_reasons)})"
         if self.harvested:
-            return f"{crop.name} | 🎉 已收获 | 营养值: {self.nutrition} | 新鲜度: {self.freshness:.1f}%"
+            tags = f" ({', '.join(self.quality_tags)})" if self.quality_tags else ""
+            return f"{crop.name} | 🎉 已收获{tags}"
         
-        status_str = f"{crop.name} | 第 {self.day_counter}/{crop.grow_days} 天 | {'✅成熟' if self.matured else '🌱生长中'} | "
-        status_str += f"健康: {self.health:.1f}% | 水分: {self.water_level:.1f}%"
+        status_str = f"{crop.name} | {self.day_counter}天 | {'✅成熟' if self.matured else '🌱生长中'} ({self.growth_points:.1f}/{crop.grow_days})\n"
+        status_str += f"健康: {self.health:.1f}% | 水分: {self.water_level:.1f}%\n"
         
         if self.damage_reasons:
-            status_str += f" | ⚠受损({', '.join(self.damage_reasons)})"
+            status_str += f"⚠受损({', '.join(self.damage_reasons)})\n"
         
+        npk_str = f"土: N:{self.field.soil_npk['N']:.1f} P:{self.field.soil_npk['P']:.1f} K:{self.field.soil_npk['K']:.1f}"
+        status_str += npk_str
         return status_str
-
-
-def get_default_crop_types():
-    # Added water_need (mm/day) and sun_preference (ideal_intensity, tolerance)
-    return {
-        "小麦": CropType("小麦", 9, (10, 25), 0.6, 300, 350, 0.01, 3, (6, 3)),
-        "玉米": CropType("玉米", 10, (15, 30), 0.4, 320, 400, 0.02, 5, (7, 2)),
-        "番茄": CropType("番茄", 7, (18, 28), 0.3, 350, 300, 0.05, 6, (8, 2)),
-        "大米": CropType("大米", 11, (20, 32), 0.1, 360, 380, 0.03, 10, (6, 3)),
-        "大豆": CropType("大豆", 9, (16, 30), 0.5, 300, 360, 0.01, 4, (7, 3)),
-        "草莓": CropType("草莓", 6, (16, 26), 0.3, 400, 180, 0.06, 5, (5, 2)),
-        "辣椒": CropType("辣椒", 8, (20, 32), 0.3, 350, 260, 0.04, 5, (8, 2)),
-        "黄瓜": CropType("黄瓜", 6, (18, 30), 0.4, 320, 240, 0.03, 7, (6, 3)),
-        "葡萄": CropType("葡萄", 10, (15, 28), 0.4, 450, 300, 0.05, 4, (8, 2)),
-    }

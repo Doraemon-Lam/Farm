@@ -1,15 +1,15 @@
-
-
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, scrolledtext
 from datetime import datetime, timedelta
 import json
 import os
 
-from weather import Weather, WeatherDynamic
+from weather import WeatherDynamic
 from market import Market
-from crops import get_default_crop_types, CropInstance
+from plant import get_all_crop_data
+from crops import Field
 from storage import Storage
+from loan import LoanManager
 
 SAVE_FILE = "farmersimpy_save.json"
 LOG_FILE = "farmersimpy_log.txt"
@@ -17,29 +17,24 @@ LOG_FILE = "farmersimpy_log.txt"
 class FarmerSimGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("🧑‍🌾 FarmerSimPy 农民模拟器")
-        self.root.geometry("900x720")
+        self.root.title("🧑‍🌾 FarmerSimPy 农民模拟器 v2.0")
+        self.root.geometry("960x760")
         
         self.dynamic_mode = False
         self.timer_running = False
 
         self.date = datetime(2025, 3, 1)
         self.funds = 10000
-        self.weather = WeatherDynamic(self.date) # Always use dynamic weather internally
+        self.weather = WeatherDynamic(self.date)
         self.market = Market()
         self.market.update_prices(self.weather)
-        self.crop_types = get_default_crop_types()
+        self.crop_data = get_all_crop_data()
         self.storage = Storage()
-        self.fields = [None] # Start with one field
+        self.fields = [Field() for _ in range(2)] # Start with two Fields
         self.field_buttons = []
         self.field_base_price = 2000
 
-        # Loan System
-        self.loan_payment_due = 3000
-        self.loan_interest_rate = 0.20 # 20% interest on overdue payment
-        self.loan_overdue_count = 0
-        self.loan_max_overdue = 3
-        self.loan_repayment_day = 28 # Day of the month for repayment
+        self.loan_manager = LoanManager()
 
         self.info_var = tk.StringVar()
         self.info_label = tk.Label(root, textvariable=self.info_var, font=("Arial", 14), anchor="w", bg="#e6ffe6")
@@ -58,8 +53,11 @@ class FarmerSimGUI:
 
         self.tab_storage = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_storage, text="📦 仓库存储")
-        self.storage_text = tk.Text(self.tab_storage, height=12, font=("Arial", 10))
-        self.storage_text.pack(expand=True, fill="both")
+
+        self.tab_finance = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_finance, text="💰 财务与贷款")
+        self.finance_text = tk.Text(self.tab_finance, height=12, font=("Arial", 10))
+        self.finance_text.pack(expand=True, fill="both")
 
         self.setup_field_grid()
 
@@ -67,10 +65,13 @@ class FarmerSimGUI:
         op_frame.pack(fill="x", pady=5)
         tk.Button(op_frame, text="查看天气", command=self.show_weather).pack(side="left", padx=5)
         tk.Button(op_frame, text="播种", command=self.plant_crop).pack(side="left", padx=5)
-        tk.Button(op_frame, text="浇水", command=lambda: self.apply_field_action("water", 150)).pack(side="left", padx=5)
-        tk.Button(op_frame, text="施肥", command=lambda: self.apply_field_action("fertilize", 100)).pack(side="left", padx=5)
-        tk.Button(op_frame, text="喷药", command=lambda: self.apply_field_action("pesticide", 120)).pack(side="left", padx=5)
+        tk.Button(op_frame, text="浇水", command=lambda: self.apply_field_action("water")).pack(side="left", padx=5)
+        tk.Button(op_frame, text="施氮肥(N)", command=lambda: self.apply_fertilizer_action('N')).pack(side="left", padx=5)
+        tk.Button(op_frame, text="施磷肥(P)", command=lambda: self.apply_fertilizer_action('P')).pack(side="left", padx=5)
+        tk.Button(op_frame, text="施钾肥(K)", command=lambda: self.apply_fertilizer_action('K')).pack(side="left", padx=5)
+        tk.Button(op_frame, text="喷药", command=lambda: self.apply_field_action("pesticide")).pack(side="left", padx=5)
         tk.Button(op_frame, text="收获", command=self.harvest_crop).pack(side="left", padx=5)
+        tk.Button(op_frame, text="借款", command=self.borrow_money).pack(side="left", padx=5)
         tk.Button(op_frame, text="推进一天", command=self.next_day).pack(side="right", padx=5)
 
         log_frame = tk.Frame(root)
@@ -112,19 +113,18 @@ class FarmerSimGUI:
         num_fields = len(self.fields)
         for i in range(num_fields):
             btn = tk.Button(
-                grid, text=f"田地 {i+1}\n（空地）", width=20, height=6,
+                grid, text=f"田地 {i+1}\n（空地）", width=25, height=7,
                 relief="groove", bg="#e0ffe0", font=("Arial", 10, "bold"),
                 command=lambda idx=i: self.on_field_click(idx), justify="left", anchor="nw",
-                wraplength=150
+                wraplength=180
             )
             btn.grid(row=i//3, column=i % 3, padx=10, pady=10, sticky="nsew")
             self.field_buttons.append(btn)
 
-        # Add "Buy Field" button
-        if num_fields < 9: # Max 9 fields
+        if num_fields < 9:
             buy_button = tk.Button(
                 grid, text=f"购买新田地\n价格: ￥{self.get_next_field_price()}",
-                width=20, height=6, relief="groove", bg="#d0e0f0",
+                width=25, height=7, relief="groove", bg="#d0e0f0",
                 font=("Arial", 10, "bold"), command=self.buy_field
             )
             buy_button.grid(row=num_fields//3, column=num_fields % 3, padx=10, pady=10, sticky="nsew")
@@ -144,39 +144,38 @@ class FarmerSimGUI:
         
         if messagebox.askquestion("确认购买", f"确定要花费 ￥{price:.2f} 购买一块新田地吗?") == "yes":
             self.funds -= price
-            self.fields.append(None)
+            self.fields.append(Field())
             self.log(f"成功购买了一块新田地，花费 ￥{price:.2f}", "info")
-            self.setup_field_grid() # Re-draw the grid
+            self.setup_field_grid()
             self.refresh_all()
 
-
     def on_field_click(self, idx):
-        crop = self.fields[idx]
-        if not crop:
+        field = self.fields[idx]
+        if not field.crop:
             if messagebox.askquestion("播种", f"田地 {idx+1} 是空的, 是否现在播种?") == "yes":
                 self.manual_plant(idx)
         else:
             self.show_crop_details(idx)
 
     def show_crop_details(self, idx):
-        crop = self.fields[idx]
+        field = self.fields[idx]
+        crop = field.crop
         win = tk.Toplevel(self.root)
         win.title(f"田地 {idx+1} 详情")
-        win.geometry("320x350")
+        win.geometry("350x400")
         
         details = crop.status() + "\n\n"
-        details += f"--- 当前状态 ---\n"
-        details += f"光照压力: {crop.sun_stress:.1f}%\n\n"
-        details += f"--- 生长需求 ---\n"
-        details += f"适宜温度: {crop.crop_type.temp_range[0]}-{crop.crop_type.temp_range[1]}°C\n"
-        details += f"理想光照: {crop.crop_type.sun_preference[0]} ± {crop.crop_type.sun_preference[1]}\n"
-        details += f"每日需水: {crop.crop_type.water_need}mm"
+        details += f"--- 作物需求 ---\n"
+        details += f"适宜温度: {crop.crop_data.temp_range[0]}-{crop.crop_data.temp_range[1]}°C\n"
+        details += f"理想光照: {crop.crop_data.sun_preference[0]} ± {crop.crop_data.sun_preference[1]}\n"
+        details += f"每日需水: {crop.crop_data.water_need}mm\n"
+        details += f"NPK偏好: {crop.crop_data.npk_preference}\n"
 
-        tk.Label(win, text=details, justify="left", wraplength=300).pack(pady=10, padx=10)
+        tk.Label(win, text=details, justify="left", wraplength=320, anchor="nw").pack(pady=10, padx=10)
 
         if crop.dead or crop.harvested:
             if messagebox.askquestion("清理田地", "作物已死亡或收获, 是否清理这块田地?") == "yes":
-                self.fields[idx] = None
+                field.clear_field()
                 self.log(f"田地 {idx+1} 已被清理。")
                 self.refresh_all()
             win.destroy()
@@ -185,40 +184,35 @@ class FarmerSimGUI:
         btn_frame = tk.Frame(win)
         btn_frame.pack(pady=10)
 
-        def create_action(action, cost, text):
+        def create_action(action):
             def func():
-                # Restore the simple, robust logic.
-                # This single method handles dispatching all actions correctly.
-                self.apply_direct_field_action(idx, action, cost)
+                self.apply_direct_field_action(idx, action)
                 win.destroy()
             return func
 
-        actions = [
-            ("water", 150, "💧 浇水"), ("fertilize", 100, "🌿 施肥"),
-            ("pesticide", 120, "🧴 喷药"), ("harvest", 0, "🎉 收获")
-        ]
-        for action, cost, text in actions:
-            tk.Button(btn_frame, text=text, command=create_action(action, cost, text), width=12).pack(pady=3)
-
-    def apply_direct_field_action(self, idx, action, cost):
-        action_map_cn = {
-            "water": "浇水",
-            "fertilize": "施肥",
-            "pesticide": "喷药",
-            "harvest": "收获"
+        actions = {
+            "water": "💧 浇水",
+            "pesticide": "🧴 喷药",
+            "harvest": "🎉 收获"
         }
-        action_cn = action_map_cn.get(action, action)
+        for action, text in actions.items():
+            tk.Button(btn_frame, text=text, command=create_action(action), width=12).pack(pady=3)
 
-        if self.funds < cost:
-            self.log(f"资金不足! 操作 '{action_cn}' 需要 ￥{cost:.2f}, 当前资金 ￥{self.funds:.2f}", "error")
-            messagebox.showerror("资金不足", f"操作 '{action_cn}' 需要 ￥{cost:.2f}, 但你只有 ￥{self.funds:.2f}")
-            return
-
-        crop = self.fields[idx]
+    def apply_direct_field_action(self, idx, action):
+        field = self.fields[idx]
+        crop = field.crop
         if not crop or crop.dead or crop.harvested:
             self.log("无效操作: 作物不存在或已处理。", "warn")
             return
-        
+
+        action_costs = {"water": 10, "pesticide": 120}
+        cost = action_costs.get(action, 0)
+        action_cn = {"water": "浇水", "pesticide": "喷药"}.get(action, action)
+
+        if self.funds < cost:
+            self.log(f"资金不足! 操作 '{action_cn}' 需要 ￥{cost:.2f}", "error")
+            return
+
         if action == "harvest":
             self.manual_harvest(idx)
             return
@@ -229,59 +223,58 @@ class FarmerSimGUI:
         self.refresh_all()
 
     def manual_plant(self, idx):
+        field = self.fields[idx]
+        if field.crop:
+            messagebox.showerror("错误", "这块田地已经种上作物了。")
+            return
+
         win = tk.Toplevel(self.root)
         win.title(f"选择作物播种到田地 {idx+1}")
-        win.geometry("500x400")
+        win.geometry("550x450")
 
         tk.Label(win, text="选择一种作物进行播种:", font=("Arial", 12)).pack(pady=5)
         
         canvas = tk.Canvas(win)
         scrollbar = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
         def plant_action(crop_name):
-            cost = self.crop_types[crop_name].cost_per_mu
+            crop_data = self.crop_data[crop_name]
+            cost = crop_data.cost_per_mu
             if self.funds < cost:
                 messagebox.showerror("资金不足", f"播种 {crop_name} 需要 ￥{cost:.2f}", parent=win)
                 return
             
-            self.fields[idx] = CropInstance(self.crop_types[crop_name], self.weather.date.timetuple().tm_yday)
-            self.funds -= cost
-            self.log(f"在田地 {idx+1} 成功播种 {crop_name}, 花费 ￥{cost:.2f}")
-            self.refresh_all()
-            win.destroy()
+            if field.plant_crop(crop_data, self.weather.date.timetuple().tm_yday):
+                self.funds -= cost
+                self.log(f"在田地 {idx+1} 成功播种 {crop_name}, 花费 ￥{cost:.2f}")
+                self.refresh_all()
+                win.destroy()
+            else:
+                messagebox.showerror("错误", "无法播种，请稍后再试。", parent=win)
 
-        for name, crop_type in self.crop_types.items():
+        for name, crop_data in self.crop_data.items():
             frame = tk.Frame(scrollable_frame, borderwidth=2, relief="groove", padx=5, pady=5)
-            
-            desc = f"{name} (播种成本: ￥{crop_type.cost_per_mu})\n"
-            desc += f"生长周期: {crop_type.grow_days}天 | 适宜温度: {crop_type.temp_range[0]}-{crop_type.temp_range[1]}°C\n"
-            desc += f"理想光照: {crop_type.sun_preference[0]}±{crop_type.sun_preference[1]} | 每日需水: {crop_type.water_need}mm"
-            
-            tk.Label(frame, text=desc, justify="left").pack(side="left", fill="x", expand=True)
+            desc = crop_data.description()
+            tk.Label(frame, text=desc, justify="left", wraplength=450).pack(side="left", fill="x", expand=True)
             tk.Button(frame, text="播种", command=lambda n=name: plant_action(n)).pack(side="right", padx=10)
-            
             frame.pack(fill="x", pady=5, padx=10)
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
     def manual_harvest(self, idx):
-        crop = self.fields[idx]
-        if not crop: return
-        result = crop.harvest()
+        field = self.fields[idx]
+        if not field.crop: return
+        result = field.crop.harvest()
         if result:
             self.storage.add_crop(result)
-            self.fields[idx] = None
-            self.log(f"🎉 成功收获 {result['name']}! 产量: {result['yield']}kg, 营养: {result['nutrition']}")
+            field.clear_field()
+            tags = f" (品质: {', '.join(result['quality_tags'])})" if result['quality_tags'] else ""
+            self.log(f"🎉 成功收获 {result['name']}! 产量: {result['yield']}kg{tags}")
         else:
             self.log("无法收获: 作物未成熟, 或已死亡/收获。", "warn")
         self.refresh_all()
@@ -294,28 +287,25 @@ class FarmerSimGUI:
         self.refresh_field()
         self.refresh_market()
         self.refresh_storage()
+        self.refresh_finance()
 
     def refresh_field(self):
-        for i, crop in enumerate(self.fields):
+        for i, field in enumerate(self.fields):
             btn = self.field_buttons[i]
-            if not crop:
-                btn.config(text=f"田地 {i+1}\n（空地）", bg="#c8e6c9")
-            elif crop.dead:
-                btn.config(text=f"田地 {i+1}\n❌ 死亡\n{crop.crop_type.name}", bg="#a0a0a0")
-            elif crop.harvested:
-                btn.config(text=f"田地 {i+1}\n🎉 已收获\n{crop.crop_type.name}", bg="#bbdefb")
-            else:
-                status_line = "✅成熟" if crop.matured else "🌱生长中"
-                health_color = "#ffcdd2" if crop.damage_reasons else "#fff9c4"
-                sun_pref = f"喜光: {crop.crop_type.sun_preference[0]}±{crop.crop_type.sun_preference[1]}"
-                sun_stress_text = f"光压: {crop.sun_stress:.0f}%"
-                btn.config(
-                    text=f"田地 {i+1}: {crop.crop_type.name} ({status_line})\n"
-                         f"第{crop.day_counter}/{crop.crop_type.grow_days}天 | 健康: {crop.health:.0f}%\n"
-                         f"水分: {crop.water_level:.0f}% | {sun_stress_text}\n"
-                         f"受损: {', '.join(crop.damage_reasons) or '无'}",
-                    bg=health_color
-                )
+            status_text = field.status()
+            
+            bg_color = "#c8e6c9"
+            if field.crop:
+                if field.crop.dead:
+                    bg_color = "#a0a0a0"
+                elif field.crop.harvested:
+                    bg_color = "#bbdefb"
+                elif field.crop.damage_reasons:
+                    bg_color = "#ffcdd2"
+                else:
+                    bg_color = "#fff9c4"
+
+            btn.config(text=f"田地 {i+1}\n{status_text}", bg=bg_color)
 
     def refresh_market(self):
         self.market_text.delete("1.0", "end")
@@ -342,7 +332,8 @@ class FarmerSimGUI:
         canvas.configure(yscrollcommand=scrollbar.set)
 
         for i, crop in enumerate(self.storage.stock):
-            btn_text = f"{crop['name']} ({crop['yield']}kg)\n新鲜度: {crop['freshness']:.0f}% | 营养: {crop['nutrition']}"
+            tags = f" ({', '.join(crop['quality_tags'])})" if crop.get('quality_tags') else ""
+            btn_text = f"{crop['name']}{tags} ({crop['yield']}kg)\n新鲜度: {crop['freshness']:.0f}% | 营养: {crop['nutrition']}"
             tk.Button(
                 scrollable_frame, text=btn_text, justify="left",
                 command=lambda idx=i: self.show_storage_item_details(idx)
@@ -355,19 +346,23 @@ class FarmerSimGUI:
         crop = self.storage.stock[idx]
         win = tk.Toplevel(self.root)
         win.title(f"出售详情: {crop['name']}")
-        win.geometry("300x250")
+        win.geometry("320x280")
 
         market_price = self.market.get_price(crop['name'])
+        
+        quality_bonus = 1.0 + (len(crop.get('quality_tags', [])) * 0.25)
+        tags_str = f" ({', '.join(crop['quality_tags'])})" if crop.get('quality_tags') else ""
+
         multiplier = (crop['nutrition'] * 0.5 + crop['freshness'] * 0.5) / 100
-        estimated_value = round(crop['yield'] * market_price * multiplier, 2)
+        estimated_value = round(crop['yield'] * market_price * multiplier * quality_bonus, 2)
         profit = estimated_value - crop.get('cost', 0)
 
-        details = f"作物: {crop['name']}\n"
+        details = f"作物: {crop['name']}{tags_str}\n"
         details += f"重量: {crop['yield']} kg\n"
-        details += f"新鲜度: {crop['freshness']:.1f}%\n"
-        details += f"营养值: {crop['nutrition']}\n\n"
+        details += f"新鲜度: {crop['freshness']:.1f}% | 营养值: {crop['nutrition']}\n\n"
         details += f"--- 财务信息 ---\n"
-        details += f"当前市场价: ￥{market_price:.2f}/kg\n"
+        details += f"市场价: ￥{market_price:.2f}/kg\n"
+        details += f"品质加成: {quality_bonus:.2f}x\n"
         details += f"总成本: ￥{crop.get('cost', 0):.2f}\n"
         details += f"预估售价: ￥{estimated_value:.2f}\n"
         details += f"预估利润: ￥{profit:.2f}"
@@ -380,8 +375,13 @@ class FarmerSimGUI:
 
         tk.Button(win, text=f"以此价格出售", command=sell_action).pack(pady=10)
 
+    def refresh_finance(self):
+        self.finance_text.delete("1.0", "end")
+        status = self.loan_manager.get_status()
+        self.finance_text.insert("end", f"--- 贷款与信用 ---\n{status}")
+
     def plant_crop(self):
-        empty_indices = [i for i, f in enumerate(self.fields) if f is None]
+        empty_indices = [i for i, f in enumerate(self.fields) if f.crop is None]
         if not empty_indices:
             messagebox.showinfo("提示", "所有田地都已种植。")
             return
@@ -393,28 +393,44 @@ class FarmerSimGUI:
             self.log("没有符合条件的田地。", "warn")
             return None
         
-        idx_str = simpledialog.askstring(prompt_title, f"选择田地 (可选: {', '.join(map(str, valid_indices))})")
+        idx_str = simpledialog.askstring(prompt_title, f"选择田地 (可选: {', '.join(map(str, [i+1 for i in valid_indices]))})")
         try:
             idx = int(idx_str) - 1
-            if (idx + 1) not in valid_indices:
+            if idx not in valid_indices:
                 raise ValueError
             return idx
         except (ValueError, TypeError):
             self.log("无效的田地编号。", "error")
             return None
 
-    def apply_field_action(self, action, cost):
+    def apply_field_action(self, action):
         idx = self._prompt_for_field(
             f"执行 '{action}'",
-            lambda: [i + 1 for i, f in enumerate(self.fields) if f and not f.dead and not f.harvested]
+            lambda: [i for i, f in enumerate(self.fields) if f.crop and not f.crop.dead and not f.crop.harvested]
         )
         if idx is not None:
-            self.apply_direct_field_action(idx, action, cost)
+            self.apply_direct_field_action(idx, action)
+
+    def apply_fertilizer_action(self, nutrient_type):
+        cost = 50
+        if self.funds < cost:
+            messagebox.showerror("资金不足", f"施肥需要 ￥{cost:.2f}")
+            return
+
+        idx = self._prompt_for_field(
+            f"施加 {nutrient_type} 肥",
+            lambda: [i for i, f in enumerate(self.fields)]
+        )
+        if idx is not None:
+            self.funds -= cost
+            message = self.fields[idx].apply_fertilizer(nutrient_type)
+            self.log(f"在田地 {idx+1} {message} 花费 ￥{cost:.2f}", "info")
+            self.refresh_all()
 
     def harvest_crop(self):
         idx = self._prompt_for_field(
             "收获作物",
-            lambda: [i + 1 for i, c in enumerate(self.fields) if c and c.matured and not c.dead and not c.harvested]
+            lambda: [i for i, f in enumerate(self.fields) if f.crop and f.crop.matured and not f.crop.dead and not f.crop.harvested]
         )
         if idx is not None:
             self.manual_harvest(idx)
@@ -424,30 +440,31 @@ class FarmerSimGUI:
             self.log("仓库是空的。", "warn")
             return
 
-        if index_to_sell is None: # Sell all
+        if index_to_sell is None:
             if messagebox.askquestion("一键出售", "确定要出售仓库里所有的作物吗?") != "yes":
                 return
             
             total_revenue = 0
-            initial_fund = self.funds
+            num_sold = len(self.storage.stock)
             
-            # Iterate backwards when removing items
             for i in range(len(self.storage.stock) - 1, -1, -1):
                 crop = self.storage.stock[i]
                 price = self.market.get_price(crop['name'])
-                name, value = self.storage.sell_crop(i, price)
+                quality_bonus = 1.0 + (len(crop.get('quality_tags', [])) * 0.25)
+                name, value = self.storage.sell_crop(i, price, quality_bonus)
                 self.funds += value
                 total_revenue += value
             
-            self.log(f"💰 一键出售完成! 共售出 {len(self.storage.stock)}批作物, 总收入 ￥{total_revenue:.2f}", "info")
+            self.log(f"💰 一键出售完成! 共售出 {num_sold}批作物, 总收入 ￥{total_revenue:.2f}", "info")
 
-        else: # Sell one
+        else:
             try:
                 idx = int(index_to_sell)
                 if not (0 <= idx < len(self.storage.stock)): raise ValueError
                 crop = self.storage.stock[idx]
                 price = self.market.get_price(crop['name'])
-                name, value = self.storage.sell_crop(idx, price)
+                quality_bonus = 1.0 + (len(crop.get('quality_tags', [])) * 0.25)
+                name, value = self.storage.sell_crop(idx, price, quality_bonus)
                 self.funds += value
                 self.log(f"💰 成功出售 {name}, 获得 ￥{value:.2f}")
             except (ValueError, TypeError):
@@ -463,22 +480,44 @@ class FarmerSimGUI:
         for _ in range(24):
             self.update_hour_logic()
         self.log(f"--- 结束 {self.weather.date.strftime('%Y-%m-%d')} ---", "info")
-        self.refresh_all() # Refresh UI after the day is done
+        self.refresh_all()
 
     def save_game(self):
         data = {
             "date": self.weather.time.strftime("%Y-%m-%d %H:%M:%S"),
             "funds": self.funds,
-            "fields": [c.__dict__ if c else None for c in self.fields],
+            "fields": [],
             "storage": self.storage.stock,
             "loan_info": {
-                "overdue_count": self.loan_overdue_count,
-                "max_overdue": self.loan_max_overdue
+                "total_debt": self.loan_manager.total_debt,
+                "credit_score": self.loan_manager.credit_score
             }
         }
-        for field_data in data["fields"]:
-            if field_data:
-                field_data['crop_type'] = field_data['crop_type'].name
+        
+        for field in self.fields:
+            field_data = {"soil_npk": field.soil_npk, "crop": None}
+            if field.crop:
+                crop = field.crop
+                field_data["crop"] = {
+                    "crop_data_name": crop.crop_data.name,
+                    "planted_day": crop.planted_day,
+                    "day_counter": crop.day_counter,
+                    "hour_counter": crop.hour_counter,
+                    "growth_points": crop.growth_points,
+                    "matured": crop.matured,
+                    "dead": crop.dead,
+                    "harvested": crop.harvested,
+                    "health": crop.health,
+                    "water_level": crop.water_level,
+                    "sun_stress": crop.sun_stress,
+                    "nutrient_satisfaction": crop.nutrient_satisfaction,
+                    "quality_tags": list(crop.quality_tags),
+                    "pesticide_effect_hours": crop.pesticide_effect_hours,
+                    "damage_reasons": list(crop.damage_reasons),
+                    "total_cost": crop.total_cost,
+                }
+            data["fields"].append(field_data)
+
         try:
             with open(SAVE_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -504,28 +543,30 @@ class FarmerSimGUI:
             self.storage.stock = data["storage"]
             
             if "loan_info" in data:
-                self.loan_overdue_count = data["loan_info"]["overdue_count"]
-                self.loan_max_overdue = data["loan_info"]["max_overdue"]
+                self.loan_manager.total_debt = data["loan_info"].get("total_debt", 30000)
+                self.loan_manager.credit_score = data["loan_info"].get("credit_score", 100)
             
             self.fields = []
+            from crops import CropInstance
             for field_data in data["fields"]:
-                if field_data:
-                    crop_type_name = field_data["crop_type"]
-                    crop_type = self.crop_types[crop_type_name]
+                new_field = Field()
+                new_field.soil_npk = field_data["soil_npk"]
+                if field_data.get("crop"):
+                    crop_save_data = field_data["crop"]
+                    crop_data_name = crop_save_data["crop_data_name"]
+                    crop_data = self.crop_data[crop_data_name]
                     
-                    # Create a new instance and load state
-                    new_crop = CropInstance(crop_type, field_data["planted_day"])
-                    for key, value in field_data.items():
-                        if key == "damage_reasons":
-                            setattr(new_crop, key, set(value)) # Convert list back to set
-                        elif key != "crop_type":
+                    new_crop = CropInstance(crop_data, crop_save_data["planted_day"], new_field)
+                    
+                    for key, value in crop_save_data.items():
+                        if key == "damage_reasons" or key == "quality_tags":
+                            setattr(new_crop, key, set(value))
+                        elif key not in ["crop_data_name", "field"]:
                             setattr(new_crop, key, value)
-                    self.fields.append(new_crop)
-                else:
-                    self.fields.append(None)
+                    new_field.crop = new_crop
+                self.fields.append(new_field)
 
-            self.setup_field_grid() # IMPORTANT: Rebuild the field UI based on loaded data
-
+            self.setup_field_grid()
             self.market.update_prices(self.weather)
             self.log("📂 游戏已加载。", "info")
             self.refresh_all()
@@ -547,10 +588,10 @@ class FarmerSimGUI:
     def update_hour_logic(self):
         is_new_day = self.weather.is_new_day()
         if is_new_day:
-            if self.weather.time.day == self.loan_repayment_day:
+            if self.weather.time.day == self.loan_manager.repayment_day:
                 self.handle_loan_payment()
 
-            self.weather.start_new_day(self.weather.time) # Use the current time, don't advance it further
+            self.weather.start_new_day(self.weather.time)
             self.market.update_prices(self.weather)
             self.log('📈 市场价格已刷新。', "info")
             fee = self.storage.update_all()
@@ -561,25 +602,23 @@ class FarmerSimGUI:
         self.weather.update_hour()
 
         log_messages = []
-        for i, crop in enumerate(self.fields):
-            if crop and not crop.dead and not crop.harvested:
-                old_health = crop.health
-                old_reasons = set(crop.damage_reasons)
+        for i, field in enumerate(self.fields):
+            if field.crop and not field.crop.dead and not field.crop.harvested:
+                old_reasons = set(field.crop.damage_reasons)
                 
-                crop.update_hourly(self.weather)
+                field.crop.update_hourly(self.weather)
                 
-                new_reasons = set(crop.damage_reasons)
+                new_reasons = set(field.crop.damage_reasons)
                 newly_added_reasons = new_reasons - old_reasons
                 if newly_added_reasons:
-                    log_messages.append(f"田地{i+1} ({crop.crop_type.name}) 出现问题: {', '.join(newly_added_reasons)}")
+                    log_messages.append(f"田地{i+1} ({field.crop.crop_data.name}) 出现问题: {', '.join(newly_added_reasons)}")
 
-                if crop.dead:
-                    self.log(f"田地{i+1} ({crop.crop_type.name}) 已经死亡。原因: {', '.join(crop.damage_reasons)}", "warn")
-                elif crop.matured and not old_reasons and crop.day_counter == crop.crop_type.grow_days:
-                     self.log(f"田地{i+1} ({crop.crop_type.name}) 已经成熟，可以收获了！", "info")
+                if field.crop.dead:
+                    self.log(f"田地{i+1} ({field.crop.crop_data.name}) 已经死亡。原因: {', '.join(field.crop.damage_reasons)}", "warn")
+                elif field.crop.matured and not old_reasons and field.crop.growth_points >= field.crop.crop_data.grow_days:
+                     self.log(f"田地{i+1} ({field.crop.crop_data.name}) 已经成熟，可以收获了！", "info")
 
-
-        if self.weather.time.hour % 6 == 0: # Log weather every 6 hours
+        if self.weather.time.hour % 6 == 0:
              log_messages.append(self.weather.summary())
         
         if log_messages:
@@ -593,43 +632,48 @@ class FarmerSimGUI:
         self.refresh_all()
         self.root.after(2500, self.update_dynamic_hour)
 
-    def handle_loan_payment(self):
-        due_amount = self.loan_payment_due * (1 + self.loan_interest_rate * self.loan_overdue_count)
-        msg = f"今天是还款日！\n\n本月应还贷款: ￥{due_amount:.2f}\n"
-        if self.loan_overdue_count > 0:
-            msg += f"已逾期 {self.loan_overdue_count} 次，产生了利息。\n"
-        msg += "\n是否现在还款？选择“否”将视为逾期。"
+    def borrow_money(self):
+        max_loan = self.loan_manager.max_loan_amount
+        amount_str = simpledialog.askstring("借款", f"请输入借款金额 (最多 ￥{max_loan:.2f}):")
+        if not amount_str: return
 
-        if messagebox.askyesno("贷款还款", msg):
-            if self.funds >= due_amount:
-                self.funds -= due_amount
-                self.log(f"💰 已偿还贷款 ￥{due_amount:.2f}", "info")
-                self.loan_overdue_count = 0 # Reset overdue count on successful full payment
-                # Can grant a grace chance back
-                if self.loan_max_overdue < 3:
-                    self.loan_max_overdue += 1
-                    self.log("按时还款，信用良好，获得一次额外逾期机会。", "info")
+        try:
+            amount = float(amount_str)
+            success, message = self.loan_manager.borrow_money(amount)
+            if success:
+                self.funds += amount
+                self.log(message, "info")
+                messagebox.showinfo("借款成功", message)
             else:
-                self.log("资金不足，无法还款！将计入逾期。", "error")
-                messagebox.showerror("还款失败", "你的资金不足以支付本月贷款，将计入逾期。")
-                self.handle_overdue()
-        else:
-            self.log("你选择了逾期还款。", "warn")
-            self.handle_overdue()
-        self.refresh_all()
+                self.log(message, "error")
+                messagebox.showerror("借款失败", message)
+            self.refresh_all()
+        except ValueError:
+            messagebox.showerror("输入无效", "请输入一个有效的数字。")
 
-    def handle_overdue(self):
-        self.loan_overdue_count += 1
-        self.loan_max_overdue -= 1
-        self.log(f"已逾期 {self.loan_overdue_count} 次。剩余逾期次数: {self.loan_max_overdue}", "warn")
-        if self.loan_max_overdue < 0:
-            self.game_over("你因多次逾期未还贷款而破产！")
+    def handle_loan_payment(self):
+        self.log("--- 还款日 ---", "info")
+        status, amount_paid, message = self.loan_manager.handle_repayment(self.funds)
+        
+        if status == "paid_full" or status == "paid_partial":
+            self.funds -= amount_paid
+            self.log(message, "info")
+            messagebox.showinfo("还款成功", message)
+        elif status == "overdue":
+            self.log(message, "warn")
+            messagebox.showwarning("还款逾期", message)
+        else:
+            self.log(message, "info")
+
+        if self.loan_manager.credit_score <= 0:
+            self.game_over("你的信用分已降至0，无法继续经营，游戏结束。")
+        
+        self.refresh_all()
 
     def game_over(self, reason):
         self.timer_running = False
         messagebox.showinfo("游戏结束", reason)
         self.log(f"--- 游戏结束: {reason} ---", "error")
-        # Disable most buttons
         for child in self.root.winfo_children():
             if isinstance(child, tk.Frame):
                 for btn in child.winfo_children():

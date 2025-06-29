@@ -25,12 +25,12 @@ class Storage:
             total_cost += storage_cost_per_crop
         return round(total_cost, 2)
 
-    def sell_crop(self, index, market_price):
+    def sell_crop(self, index, market_price, quality_bonus=1.0):
         if index < 0 or index >= len(self.stock):
             return None, 0.0
         crop = self.stock.pop(index)
         multiplier = (crop['nutrition'] * 0.5 + crop['freshness'] * 0.5) / 100
-        final_price = round(crop['yield'] * market_price * multiplier, 2)
+        final_price = round(crop['yield'] * market_price * multiplier * quality_bonus, 2)
         return crop['name'], final_price
 
     def list_storage(self):
